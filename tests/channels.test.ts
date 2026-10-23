@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { MAX_TITLE, createChannel, exportChannels, filterChannels, importChannels, parseStoredChannels, sanitizeUrl, setStatus } from "../lib/channels.ts";
+import { describe, it } from "vitest";
+import { MAX_TITLE, createChannel, exportChannels, filterChannels, importChannels, parseStoredChannels, sanitizeUrl, setStatus } from "@/lib/channels";
 
 describe("sanitizeUrl", () => {
   it("accepts http(s) and rejects script or relative links", () => {

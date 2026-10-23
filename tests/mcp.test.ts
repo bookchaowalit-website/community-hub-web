@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { ERROR_CODES, handleMcpMessage, requireString, respondToMcpRequest } from "../lib/mcp.ts";
-import type { McpTool } from "../lib/mcp.ts";
+import { describe, it } from "vitest";
+import { ERROR_CODES, handleMcpMessage, requireString, respondToMcpRequest } from "@/lib/mcp";
+import type { McpTool } from "@/lib/mcp";
 
 const server = { name: "test-server", version: "0.0.0" };
 const tools: McpTool[] = [
