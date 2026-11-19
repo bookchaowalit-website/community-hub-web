@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { MAX_TITLE, createChannel, exportChannels, filterChannels, importChannels, parseStoredChannels, sanitizeUrl, setStatus } from "@/lib/channels";
 
 describe("sanitizeUrl", () => {
@@ -125,5 +125,20 @@ describe("edge cases", () => {
     const title = `${"x".repeat(MAX_TITLE - 1)}😀`;
     const [channel] = parseStoredChannels(JSON.stringify([{ id: "a", title }])) ?? [];
     assert.equal(channel.title, "x".repeat(MAX_TITLE - 1));
+  });
+});
+
+describe("channelsIn, restoreChannel and formatAdded", () => {
+  it("filters by state and query, restores in place, formats in UTC", async () => {
+    const { channelsIn, restoreChannel, formatAdded } = await import("@/lib/channels");
+    const a = { id: "a", title: "A", body: "x", status: "Active" as const, createdAt: 1 };
+    const b = { id: "b", title: "B", body: "y", status: "Draft" as const, createdAt: 1 };
+    expect(channelsIn([a, b], "Draft", "")).toEqual([b]);
+    expect(channelsIn([a, b], "All", "x")).toEqual([a]);
+    expect(restoreChannel([b], a, "b")).toEqual([a, b]);
+    expect(restoreChannel([a], b, null)).toEqual([a, b]);
+    expect(restoreChannel([a, b], b, null)).toEqual([a, b]);
+    expect(formatAdded(Date.UTC(2026, 7, 18, 23))).toBe("18 Aug 2026");
+    expect(formatAdded(0)).toBe("date unknown");
   });
 });

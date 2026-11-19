@@ -158,3 +158,23 @@ export function importChannels(current: readonly Channel[], raw: string): Import
   const fresh = incoming.filter((channel) => !known.has(channel.id));
   return { channels: [...current, ...fresh], added: fresh.length, skipped: list.length - fresh.length };
 }
+
+export type Filter = "All" | Status;
+
+/** Channels in `filter` ("All" for every state) that match `query`. */
+export function channelsIn(channels: readonly Channel[], filter: Filter, query: string): Channel[] {
+  return filterChannels(channels, query).filter((channel) => filter === "All" || channel.status === filter);
+}
+
+/** Put a removed channel back before the one that followed it (or at the end), for Undo. */
+export function restoreChannel(channels: readonly Channel[], channel: Channel, beforeId: string | null): Channel[] {
+  if (channels.some((item) => item.id === channel.id)) return [...channels];
+  const at = beforeId ? channels.findIndex((item) => item.id === beforeId) : -1;
+  return at < 0 ? [...channels, channel] : [...channels.slice(0, at), channel, ...channels.slice(at)];
+}
+
+/** "18 Aug 2026" in UTC, or "date unknown" for a timestamp of 0. */
+export function formatAdded(timestamp: number): string {
+  if (!timestamp) return "date unknown";
+  return new Date(timestamp).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+}

@@ -52,4 +52,4 @@ scan on every push and PR to `main`.
 - `lib/mcp.ts` + `app/api/mcp/route.ts`: stateless JSON-RPC endpoint.
 - `lib/site.ts`: canonical origin.
 - `lib/sentry.ts` + `instrumentation*.ts`: error reporting to Sentry, errors only, personal data stripped.
-- `app/more-projects/page.tsx`: portfolio link page (copied per repository, not a package).
+- `/more-projects` redirects (308) to https://bookchaowalit.com/ (`next.config.ts`).

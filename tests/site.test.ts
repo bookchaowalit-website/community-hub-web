@@ -13,7 +13,7 @@ describe("site origin", () => {
     expect(robots()).toEqual({ rules: { userAgent: "*", allow: "/", disallow: "/api/" }, sitemap: `${SITE_URL}/sitemap.xml` });
   });
 
-  it("sitemap.xml lists the home page and the project page", () => {
-    expect(sitemap().map((entry) => entry.url)).toEqual([SITE_URL, `${SITE_URL}/more-projects`]);
+  it("sitemap.xml lists the home page (/more-projects is a redirect now)", () => {
+    expect(sitemap().map((entry) => entry.url)).toEqual([SITE_URL]);
   });
 });

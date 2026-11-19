@@ -1,54 +1,94 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { MAX_BODY, MAX_TITLE, SEED, STATUSES, STORAGE_KEY, createChannel, exportChannels, filterChannels, importChannels, parseStoredChannels, setStatus } from "@/lib/channels";
-import type { Channel, Status } from "@/lib/channels";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { AppFoot, AppTop, ListButton, PlusIcon, type Tone } from "@/components/app-shell";
+import { MAX_BODY, MAX_TITLE, SEED, STATUSES, STORAGE_KEY, channelsIn, createChannel, exportChannels, formatAdded, importChannels, parseStoredChannels, restoreChannel, setStatus, type Channel, type Filter, type NewChannelInput as Draft, type Status as ChannelStatus } from "@/lib/channels";
+import { useStoredState } from "@/lib/use-stored-state";
 
-type IconName = "arrow" | "compass" | "external" | "plus" | "search" | "x";
-function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
-  const paths: Record<IconName, string> = {
-    arrow: "M5 12h13 M13 6l6 6-6 6",
-    compass: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z M15.5 8.5l-2 5-5 2 2-5 5-2Z",
-    external: "M14 5h5v5 M19 5l-8 8 M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5",
-    plus: "M12 5v14 M5 12h14",
-    search: "m21 21-4.3-4.3 M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z",
-    x: "M6 6l12 12 M18 6 6 18",
-  };
-  return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
-}
+const EMPTY_DRAFT: Draft = { title: "", body: "", url: "", status: "Draft" };
 
-function useChannels() {
-  const [channels, setChannels] = useState<Channel[]>(SEED);
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    try {
-      const saved = parseStoredChannels(localStorage.getItem(STORAGE_KEY));
-      // Hydrate browser-local entries after the server-rendered seed.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (saved) setChannels(saved);
-    } catch { /* storage blocked: keep seed */ }
-    setReady(true);
-  }, []);
-  useEffect(() => {
-    if (!ready) return;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(channels)); } catch { /* storage full or blocked */ }
-  }, [channels, ready]);
-  return [channels, setChannels] as const;
-}
+type Removed = { channel: Channel; beforeId: string | null; nextShown?: string; prevShown?: string; viaKeyboard: boolean };
+
+const TONE: Record<ChannelStatus, Tone> = { Draft: "amber", Active: "green", Done: "grey" };
+const FILTERS: Filter[] = ["All", ...STATUSES];
 
 export default function Home() {
-  const [channels, setChannels] = useChannels();
-  const [selectedId, setSelectedId] = useState("channel-01");
-  const [query, setQuery] = useState("");
-  const [showAdd, setShowAdd] = useState(false);
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [url, setUrl] = useState("");
-  const [status, setNewStatus] = useState<Status>("Draft");
+  const [channels, setChannels] = useStoredState(STORAGE_KEY, SEED, parseStoredChannels);
   const [formError, setFormError] = useState("");
   const [backupNotice, setBackupNotice] = useState("");
-  const exportJson = () => {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<Filter>("All");
+  const [composing, setComposing] = useState(false);
+  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const [removed, setRemoved] = useState<Removed | null>(null);
+  const [toastFocused, setToastFocused] = useState(false);
+  const [announcement, setAnnouncement] = useState("");
+  const titleRef = useRef<HTMLInputElement>(null);
+  const newRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const undoRef = useRef<HTMLButtonElement>(null);
+  const toastRef = useRef<HTMLDivElement>(null);
+  const wasComposing = useRef(false);
+  const focusNext = useRef<string[] | null>(null);
+  const visible = useMemo(() => channelsIn(channels, filter, query), [channels, filter, query]);
+  const countOf = (value: Filter) => (value === "All" ? channels.length : channels.filter((item) => item.status === value).length);
+
+  // Opening the composer focuses the title; closing it returns focus to Add a room.
+  useEffect(() => {
+    if (composing) titleRef.current?.focus();
+    else if (wasComposing.current) newRef.current?.focus();
+    wasComposing.current = composing;
+  }, [composing]);
+  useEffect(() => { if (removed?.viaKeyboard) undoRef.current?.focus(); }, [removed]);
+  // After the toast closes, focus goes to the nearest row still shown, else Add a room.
+  useEffect(() => {
+    const ids = focusNext.current;
+    if (removed || !ids) return;
+    focusNext.current = null;
+    const rows = [...document.querySelectorAll<HTMLElement>(".as-row[data-channel]")];
+    const row = ids.map((id) => rows.find((r) => r.dataset.channel === id)).find(Boolean);
+    (row?.querySelector<HTMLButtonElement>(".as-danger") ?? newRef.current ?? titleRef.current)?.focus();
+  }, [removed, channels]);
+  // Reserve the toast's height at the bottom so a control focused behind it scrolls clear.
+  const toastShown = removed !== null;
+  useLayoutEffect(() => {
+    const toast = toastRef.current;
+    if (!toastShown || !toast) return;
+    const rootStyle = document.documentElement.style;
+    const reserve = () => rootStyle.setProperty("--as-toast-space", `${toast.offsetHeight + 32}px`);
+    reserve();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(reserve) : null;
+    observer?.observe(toast);
+    return () => { observer?.disconnect(); rootStyle.removeProperty("--as-toast-space"); };
+  }, [toastShown]);
+  // The toast closes 6 s after a removal, but never while it holds focus.
+  useEffect(() => {
+    if (!removed || toastFocused) return;
+    const timer = window.setTimeout(() => setRemoved(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [removed, toastFocused]);
+
+  function add(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const result = createChannel(draft, Date.now());
+    if ("error" in result) {
+      setFormError(result.error);
+      return;
+    }
+    const channel = result.channel;
+    setChannels((items) => [channel, ...items]);
+    if (filter !== "All" && filter !== channel.status) setFilter(channel.status);
+    setQuery("");
+    setAnnouncement(`Added “${channel.title}” to the directory.`);
+    setDraft(EMPTY_DRAFT);
+    setFormError("");
+    setComposing(false);
+  }
+  function changeStatus(channel: Channel, status: ChannelStatus) {
+    setChannels((items) => setStatus(items, channel.id, status));
+    setAnnouncement(`“${channel.title}” is now ${status}.`);
+  }
+  function exportJson() {
     const href = URL.createObjectURL(new Blob([exportChannels(channels)], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = href;
@@ -56,34 +96,174 @@ export default function Home() {
     anchor.click();
     URL.revokeObjectURL(href);
     setBackupNotice(`Exported ${channels.length} ${channels.length === 1 ? "room" : "rooms"}.`);
-  };
-  const importJson = async (file: File | undefined) => {
+  }
+  async function importJson(file: File | undefined) {
     if (!file) return;
     const result = importChannels(channels, await file.text());
-    if ("error" in result) { setBackupNotice(result.error); return; }
+    if ("error" in result) {
+      setBackupNotice(result.error);
+      return;
+    }
     setChannels(result.channels);
     setBackupNotice(`Imported ${result.added} new ${result.added === 1 ? "room" : "rooms"}${result.skipped ? `, skipped ${result.skipped} (already here or invalid)` : ""}.`);
-  };
-  const filtered = useMemo(() => filterChannels(channels, query), [channels, query]);
-  const selected = filtered.find((channel) => channel.id === selectedId) ?? filtered[0] ?? null;
-  const addChannel = () => {
-    const result = createChannel({ title, body, status, url }, Date.now());
-    if ("error" in result) { setFormError(result.error); return; }
-    setChannels((current) => [result.channel, ...current]);
-    setSelectedId(result.channel.id);
-    setTitle(""); setBody(""); setUrl(""); setNewStatus("Draft"); setFormError(""); setShowAdd(false);
-  };
+  }
+  function clearSearch() {
+    setQuery("");
+    searchRef.current?.focus();
+  }
+  function remove(channel: Channel, viaKeyboard: boolean) {
+    const index = channels.findIndex((item) => item.id === channel.id);
+    if (index < 0) return;
+    const shownAt = visible.findIndex((item) => item.id === channel.id);
+    setChannels((items) => items.filter((item) => item.id !== channel.id));
+    setRemoved({ channel, beforeId: channels[index + 1]?.id ?? null, nextShown: visible[shownAt + 1]?.id, prevShown: shownAt > 0 ? visible[shownAt - 1].id : undefined, viaKeyboard });
+    setAnnouncement(`Removed “${channel.title}”. Undo is available for a few seconds.`);
+  }
+  function closeToast(ids?: string[]) {
+    focusNext.current = ids ?? [removed?.nextShown, removed?.prevShown].filter((id): id is string => Boolean(id));
+    setRemoved(null);
+    setToastFocused(false);
+  }
+  function undo() {
+    if (!removed) return;
+    const { channel, beforeId } = removed;
+    setChannels((items) => restoreChannel(items, channel, beforeId));
+    setAnnouncement(`Restored “${channel.title}”.`);
+    closeToast([channel.id]);
+  }
+
+  const title = filter === "All" ? "All rooms" : filter;
 
   return (
-    <main className="community-shell">
-      <header className="community-topbar"><Link className="community-brand" href="/"><Icon name="compass" size={17} /><span>FIELD NOTES / COMMUNITY</span></Link><span className="community-status"><i /> LOCAL DIRECTORY</span></header>
-      <section className="community-hero"><div><p className="community-kicker">COMMUNITY HUB / 01</p><h1>Keep the rooms<br /><em>easy to find.</em></h1><p className="community-lede">A calm directory for the channels and resources that keep a solo practice in motion.</p></div><div className="community-hero-orbit" aria-hidden="true"><span className="orbit orbit-one" /><span className="orbit orbit-two" /><span className="orbit-dot dot-one" /><span className="orbit-dot dot-two" /><span className="orbit-core" /></div></section>
-      <section className="community-directory" aria-label="Community directory">
-        <aside className="community-index"><div className="community-index-head"><span>CHANNEL INDEX</span><b>{filtered.length.toString().padStart(2, "0")}</b></div><label className="community-search"><Icon name="search" size={15} /><span className="sr-only">Search channels</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search rooms" /></label><nav className="community-list" aria-label="Channels">{filtered.map((channel, index) => <button key={channel.id} className={selected?.id === channel.id ? "is-selected" : ""} aria-current={selected?.id === channel.id ? "true" : undefined} onClick={() => setSelectedId(channel.id)} type="button"><span className="community-list-number">0{index + 1}</span><span className="community-list-copy"><strong>{channel.title}</strong><small>{channel.body}</small></span><span className={`community-dot dot-${channel.status.toLowerCase()}`} aria-hidden="true" /><span className="sr-only">, {channel.status}</span></button>)}{filtered.length === 0 ? <p className="community-empty">No room found.</p> : null}</nav><button className="community-add-trigger" type="button" aria-expanded={showAdd} aria-controls="community-add-form" onClick={() => setShowAdd((value) => !value)}>{showAdd ? <Icon name="x" size={15} /> : <Icon name="plus" size={15} />} {showAdd ? "Close form" : "Add a room"}</button><div className="community-backup"><button type="button" onClick={exportJson}>Export JSON</button><label><span>Import JSON</span><input type="file" accept="application/json,.json" onChange={(event) => { void importJson(event.target.files?.[0]); event.target.value = ""; }} /></label><p role="status">{backupNotice}</p></div></aside>
-        <div className="community-room">{selected ? <><div className="community-room-head"><span className={`community-room-status dot-${selected.status.toLowerCase()}`} aria-hidden="true" /> <span>{selected.status.toUpperCase()} / LOCAL ENTRY</span><span className="community-room-id">{selected.id}</span></div><h2>{selected.title}</h2><p className="community-room-body">{selected.body}</p><div className="community-room-actions">{selected.url ? <a href={selected.url} target="_blank" rel="noopener noreferrer">Open channel <Icon name="arrow" size={15} /><span className="sr-only"> (opens in a new tab)</span></a> : <span className="community-no-link">No link saved</span>}<label className="community-status-select"><span className="sr-only">Status for {selected.title}</span><select value={selected.status} onChange={(event) => setChannels((current) => setStatus(current, selected.id, event.target.value as Status))}>{STATUSES.map((option) => <option key={option}>{option}</option>)}</select></label><button type="button" onClick={() => setChannels((current) => current.filter((channel) => channel.id !== selected.id))}>Remove entry <Icon name="x" size={15} /></button></div><div className="community-room-foot"><span>Added {new Date(selected.createdAt).toLocaleDateString("en-GB")}</span><span>Browser-local state</span></div></> : <div className="community-empty-room">Select a room from the index.</div>}</div>
-        {showAdd ? <form id="community-add-form" className="community-add-form" noValidate onSubmit={(event) => { event.preventDefault(); addChannel(); }}><div className="community-form-head"><span>NEW ROOM</span><Icon name="plus" size={16} /></div><label><span>NAME</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Research circle" maxLength={MAX_TITLE} required autoFocus /></label><label><span>WHAT HAPPENS HERE</span><textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="A short description" maxLength={MAX_BODY} /></label><label><span>LINK (OPTIONAL)</span><input type="url" inputMode="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://" /></label><label><span>STATE</span><select value={status} onChange={(event) => setNewStatus(event.target.value as Status)}>{STATUSES.map((option) => <option key={option}>{option}</option>)}</select></label>{formError ? <p className="community-form-error" role="alert">{formError}</p> : null}<button type="submit">Save to directory <Icon name="plus" size={14} /></button></form> : null}
-      </section>
-      <footer className="community-footer"><span>COMMUNITY HUB / RESOURCE DIRECTORY</span><span>NO MEMBERSHIP CLAIMS / NO SYNC</span></footer>
-    </main>
+    <div className="as">
+      <a className="as-skip" href="#main">Skip to content</a>
+      <AppTop name="Community Hub" tagline="Rooms and resources, easy to find" />
+
+      <div className="as-body">
+        <aside className="as-side" aria-label="Lists">
+          <h2>Directory</h2>
+          <ul className="as-lists">
+            {FILTERS.map((value) => (
+              <ListButton key={value} label={value === "All" ? "All rooms" : value} count={countOf(value)} tone={value === "All" ? undefined : TONE[value]} current={filter === value} onSelect={() => setFilter(value)} />
+            ))}
+          </ul>
+        </aside>
+
+        <main id="main" className="as-main">
+          <div className="as-head">
+            <div>
+              <h1>{title}</h1>
+              <p aria-live="polite">{visible.length} {visible.length === 1 ? "room" : "rooms"}{query.trim() ? ` matching “${query.trim()}”` : ""}</p>
+            </div>
+            <div className="as-tools">
+              <label className="as-search">
+                <span className="as-sr">Search rooms</span>
+                <input ref={searchRef} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" />
+              </label>
+              {composing ? null : <button ref={newRef} type="button" className="as-button" onClick={() => setComposing(true)}><PlusIcon />Add a room</button>}
+            </div>
+          </div>
+
+          {composing ? (
+            <form className="as-composer" onSubmit={add} aria-label="New room" noValidate>
+              <label className="as-field">Name
+                <input ref={titleRef} value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.target.value }); setFormError(""); }} placeholder="e.g. Research circle" maxLength={MAX_TITLE} autoComplete="off" required />
+              </label>
+              <label className="as-field">What happens here
+                <textarea value={draft.body} onChange={(event) => { setDraft({ ...draft, body: event.target.value }); setFormError(""); }} placeholder="A short description" maxLength={MAX_BODY} rows={2} />
+              </label>
+              <label className="as-field">Link (optional)
+                <input type="url" inputMode="url" value={draft.url} onChange={(event) => { setDraft({ ...draft, url: event.target.value }); setFormError(""); }} placeholder="https://" autoComplete="off" aria-invalid={formError ? true : undefined} aria-describedby={formError ? "room-error" : undefined} />
+              </label>
+              {formError ? <p id="room-error" className="hub-error" role="alert">{formError}</p> : null}
+              <div className="as-composer-foot">
+                <div className="as-segmented-wrap">
+                  <span id="state-label">Start as</span>
+                  <div className="as-segmented" role="group" aria-labelledby="state-label">
+                    {STATUSES.map((status) => (
+                      <button key={status} type="button" aria-pressed={draft.status === status} onClick={() => setDraft({ ...draft, status })}>{status}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="as-composer-actions">
+                  <button type="button" className="as-plain" onClick={() => { setComposing(false); setDraft(EMPTY_DRAFT); setFormError(""); }}>Cancel</button>
+                  <button type="submit" className="as-button" disabled={!draft.title.trim()}>Add</button>
+                </div>
+              </div>
+            </form>
+          ) : null}
+
+          {visible.length ? (
+            <ul className="as-list" aria-label={title}>
+              {visible.map((channel) => (
+                <li className="as-row" key={channel.id} data-channel={channel.id}>
+                  <div>
+                    <h3>{channel.title}</h3>
+                    <p className="as-row-detail">{channel.body}</p>
+                    <p className="as-row-meta">
+                      {channel.createdAt ? <>Added <time dateTime={new Date(channel.createdAt).toISOString()}>{formatAdded(channel.createdAt)}</time></> : "Added date unknown"}
+                      {channel.url ? null : " · No link saved"}
+                    </p>
+                    {channel.url ? <a className="hub-link" href={channel.url} target="_blank" rel="noopener noreferrer">Open room<span className="as-sr"> {channel.title} (opens in a new tab)</span></a> : null}
+                  </div>
+                  <label className="hub-state">
+                    <span className="as-sr">State of {channel.title}</span>
+                    <select value={channel.status} data-tone={TONE[channel.status]} onChange={(event) => changeStatus(channel, event.target.value as ChannelStatus)}>
+                      {STATUSES.map((status) => <option key={status}>{status}</option>)}
+                    </select>
+                  </label>
+                  <button type="button" className="as-plain as-danger" aria-label={`Remove ${channel.title}`} onClick={(event) => remove(channel, event.detail === 0)}>Remove</button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="as-list as-empty">
+              {query.trim() ? (
+                <>
+                  <strong>Nothing matches</strong>
+                  No room in {filter === "All" ? "the directory" : title} mentions “{query.trim()}”.
+                  <div className="as-actions-row hub-center"><button type="button" className="as-plain" onClick={clearSearch}>Clear search</button></div>
+                </>
+              ) : channels.length === 0 ? (
+                <><strong>The directory is empty</strong>Rooms you add are kept in this browser only. Press Add a room to list the first channel or resource, or import a JSON backup below.</>
+              ) : (
+                <><strong>Nothing is {title} yet</strong>Change a room&apos;s state, or press Add a room and start it as {title}.</>
+              )}
+            </div>
+          )}
+
+          <section className="as-section" aria-labelledby="backup-title">
+            <div className="as-section-head hub-backup-head">
+              <h2 id="backup-title" className="as-section-title">Backup</h2>
+              <div className="hub-backup">
+                <button type="button" className="as-plain" onClick={exportJson}>Export JSON</button>
+                <label className="as-plain hub-import">Import JSON<input type="file" accept="application/json,.json" onChange={(event) => { void importJson(event.target.files?.[0]); event.target.value = ""; }} /></label>
+              </div>
+            </div>
+            <p className="hub-status" role="status">{backupNotice}</p>
+          </section>
+
+          <p className="as-note">Saved in this browser only: no account, no membership claims, no sync. Export a JSON backup to move the directory to another browser.</p>
+        </main>
+      </div>
+
+      <p className="as-sr" role="status" aria-live="polite">{announcement}</p>
+      {removed ? (
+        <div
+          ref={toastRef}
+          className="as-toast"
+          role="group"
+          aria-label="Undo remove"
+          onFocus={() => setToastFocused(true)}
+          onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setToastFocused(false); }}
+          onKeyDown={(event) => { if (event.key === "Escape") closeToast(); }}
+        >
+          <span>Removed “{removed.channel.title}”</span>
+          <button ref={undoRef} type="button" className="as-plain" onClick={undo} aria-label="Undo remove">Undo</button>
+        </div>
+      ) : null}
+
+      <AppFoot source="https://github.com/bookchaowalit-website/community-hub-web" />
+    </div>
   );
 }
