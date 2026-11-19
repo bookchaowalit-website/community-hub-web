@@ -7,7 +7,10 @@ import { useStoredState } from "@/lib/use-stored-state";
 
 const EMPTY_DRAFT: Draft = { title: "", body: "", url: "", status: "Draft" };
 
-type Removed = { channel: Channel; beforeId: string | null; nextShown?: string; prevShown?: string; viaKeyboard: boolean };
+// beforeId: the channel that followed it when it was removed. nextShown / prevShown: the rows shown around it, for focus.
+type RemovedEntry = { channel: Channel; beforeId: string | null; nextShown?: string; prevShown?: string };
+type RemovedBatch = { entries: RemovedEntry[]; viaKeyboard: boolean };
+const removedLabel = (entries: RemovedEntry[]) => (entries.length === 1 ? `Removed “${entries[0].channel.title}”` : `Removed ${entries.length} rooms`);
 
 const TONE: Record<ChannelStatus, Tone> = { Draft: "amber", Active: "green", Done: "grey" };
 const FILTERS: Filter[] = ["All", ...STATUSES];
@@ -20,7 +23,11 @@ export default function Home() {
   const [filter, setFilter] = useState<Filter>("All");
   const [composing, setComposing] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
-  const [removed, setRemoved] = useState<Removed | null>(null);
+  // Every removal still inside the Undo window: one Undo puts them all back where they were.
+  const [removed, setRemovedState] = useState<RemovedBatch | null>(null);
+  // The latest batch, so two removals before a re-render still both land in it.
+  const removedRef = useRef<RemovedBatch | null>(null);
+  const setRemoved = (batch: RemovedBatch | null) => { removedRef.current = batch; setRemovedState(batch); };
   const [toastFocused, setToastFocused] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const titleRef = useRef<HTMLInputElement>(null);
@@ -61,10 +68,10 @@ export default function Home() {
     observer?.observe(toast);
     return () => { observer?.disconnect(); rootStyle.removeProperty("--as-toast-space"); };
   }, [toastShown]);
-  // The toast closes 6 s after a removal, but never while it holds focus.
+  // The toast closes 6 s after the latest removal (each removal restarts it), but never while it holds focus.
   useEffect(() => {
     if (!removed || toastFocused) return;
-    const timer = window.setTimeout(() => setRemoved(null), 6000);
+    const timer = window.setTimeout(() => { removedRef.current = null; setRemovedState(null); }, 6000);
     return () => window.clearTimeout(timer);
   }, [removed, toastFocused]);
 
@@ -116,20 +123,27 @@ export default function Home() {
     if (index < 0) return;
     const shownAt = visible.findIndex((item) => item.id === channel.id);
     setChannels((items) => items.filter((item) => item.id !== channel.id));
-    setRemoved({ channel, beforeId: channels[index + 1]?.id ?? null, nextShown: visible[shownAt + 1]?.id, prevShown: shownAt > 0 ? visible[shownAt - 1].id : undefined, viaKeyboard });
-    setAnnouncement(`Removed “${channel.title}”. Undo is available for a few seconds.`);
+    const entry: RemovedEntry = { channel, beforeId: channels[index + 1]?.id ?? null, nextShown: visible[shownAt + 1]?.id, prevShown: shownAt > 0 ? visible[shownAt - 1].id : undefined };
+    const entries = [...(removedRef.current?.entries ?? []), entry];
+    setRemoved({ entries, viaKeyboard });
+    setAnnouncement(entries.length === 1 ? `Removed “${channel.title}”. Undo is available for a few seconds.` : `Removed ${entries.length} rooms. Undo is available for a few seconds.`);
   }
   function closeToast(ids?: string[]) {
-    focusNext.current = ids ?? [removed?.nextShown, removed?.prevShown].filter((id): id is string => Boolean(id));
+    const last = removedRef.current?.entries.at(-1);
+    // Dismissed: the row after the removed one, else the one before it.
+    focusNext.current = ids ?? [last?.nextShown, last?.prevShown].filter((id): id is string => Boolean(id));
     setRemoved(null);
     setToastFocused(false);
   }
   function undo() {
-    if (!removed) return;
-    const { channel, beforeId } = removed;
-    setChannels((items) => restoreChannel(items, channel, beforeId));
-    setAnnouncement(`Restored “${channel.title}”.`);
-    closeToast([channel.id]);
+    const entries = removedRef.current?.entries;
+    if (!entries?.length) return;
+    // Latest removal first: each goes back before the channel that followed it when it was removed.
+    setChannels((current) => entries.reduceRight((list, { channel, beforeId }) => restoreChannel(list, channel, beforeId), current));
+    const latest = entries[entries.length - 1].channel;
+    setAnnouncement(entries.length === 1 ? `Restored “${latest.title}”.` : `Restored ${entries.length} rooms.`);
+    // Undone: back to the restored row the user removed last.
+    closeToast([latest.id]);
   }
 
   const title = filter === "All" ? "All rooms" : filter;
@@ -258,8 +272,8 @@ export default function Home() {
           onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setToastFocused(false); }}
           onKeyDown={(event) => { if (event.key === "Escape") closeToast(); }}
         >
-          <span>Removed “{removed.channel.title}”</span>
-          <button ref={undoRef} type="button" className="as-plain" onClick={undo} aria-label="Undo remove">Undo</button>
+          <span>{removedLabel(removed.entries)}</span>
+          <button ref={undoRef} type="button" className="as-plain" onClick={undo} aria-label={removed.entries.length === 1 ? "Undo remove" : `Undo remove of ${removed.entries.length} rooms`}>Undo</button>
         </div>
       ) : null}
 

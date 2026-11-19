@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "@/app/page";
-import { STORAGE_KEY } from "@/lib/channels";
+import { STORAGE_KEY, SEED } from "@/lib/channels";
 import { resetStoredCache } from "@/lib/use-stored-state";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -141,5 +141,53 @@ describe("backup", () => {
     expect(host.textContent).toContain("Imported 1 new room");
     await pick("not json");
     expect(host.textContent).toContain("not valid JSON");
+  });
+});
+
+describe("batch Undo", () => {
+  afterEach(() => { vi.useRealTimers(); });
+  // Three copies of the samples, so there are enough rows to remove two.
+  beforeEach(() => {
+    act(() => root.unmount());
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([1, 2, 3].flatMap((n) => SEED.map((item) => ({ ...item, id: `${item.id}-${n}` })))));
+    resetStoredCache();
+    root = createRoot(host);
+    act(() => root.render(<Home />));
+  });
+  // detail 0 = keyboard (Enter/Space) click, 1 = pointer click.
+  const click = (el: Element, detail: number) => act(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true, detail })); });
+  const shownRows = () => [...host.querySelectorAll<HTMLElement>(".as-row[data-channel]")];
+  const rowIds = () => shownRows().map((row) => row.getAttribute("data-channel"));
+  const removeButton = (i: number) => shownRows()[i].querySelector<HTMLButtonElement>(".as-danger")!;
+  const undoButton = () => host.querySelector<HTMLButtonElement>(".as-toast button")!;
+
+  it("consecutive removes restore together with one Undo", () => {
+    vi.useFakeTimers();
+    const before = rowIds();
+    expect(before.length).toBeGreaterThanOrEqual(3);
+    click(removeButton(1), 1);
+    act(() => { vi.advanceTimersByTime(4000); });
+    click(removeButton(0), 1);
+    expect(rowIds()).toEqual(before.slice(2));
+    expect(host.querySelector(".as-toast span")!.textContent).toBe("Removed 2 rooms");
+    expect(undoButton().getAttribute("aria-label")).toBe("Undo remove of 2 rooms");
+    // The second removal restarted the 6 s window: 4 s later it is still open.
+    act(() => { vi.advanceTimersByTime(4000); });
+    click(undoButton(), 1);
+    expect(rowIds()).toEqual(before);
+    expect(host.querySelector(".as-toast")).toBeNull();
+    expect(host.querySelector(".as-sr[role=status]")!.textContent).toBe("Restored 2 rooms.");
+  });
+
+  it("keyboard remove focuses Undo", () => {
+    const before = rowIds();
+    click(removeButton(0), 0);
+    expect(document.activeElement).toBe(undoButton());
+    click(removeButton(0), 0);
+    expect(document.activeElement).toBe(undoButton());
+    click(undoButton(), 0);
+    expect(rowIds()).toEqual(before);
+    // Back on the restored row removed last (it was second in the list).
+    expect(document.activeElement).toBe(removeButton(1));
   });
 });
