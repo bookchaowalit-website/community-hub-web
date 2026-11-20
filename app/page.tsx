@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { AppFoot, AppTop, ListButton, PlusIcon, type Tone } from "@/components/app-shell";
 import { MAX_BODY, MAX_TITLE, SEED, STATUSES, STORAGE_KEY, channelsIn, createChannel, exportChannels, formatAdded, importChannels, parseStoredChannels, restoreChannel, setStatus, type Channel, type Filter, type NewChannelInput as Draft, type Status as ChannelStatus } from "@/lib/channels";
 import { useStoredState } from "@/lib/use-stored-state";
@@ -14,6 +14,34 @@ const removedLabel = (entries: RemovedEntry[]) => (entries.length === 1 ? `Remov
 
 const TONE: Record<ChannelStatus, Tone> = { Draft: "amber", Active: "green", Done: "grey" };
 const FILTERS: Filter[] = ["All", ...STATUSES];
+
+// One line of the description per row (App shell rule); a longer one gets Show more.
+function RoomDetail({ body }: { body: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const id = useId();
+  const [expanded, setExpanded] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => { if (el.dataset.expanded !== "true") setClipped(el.scrollWidth > el.clientWidth); };
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    observer?.observe(el);
+    measure();
+    return () => observer?.disconnect();
+  }, [body]);
+  const long = expanded || clipped || body.includes("\n");
+  return (
+    <>
+      <p ref={ref} id={id} className="as-row-detail" data-expanded={expanded ? "true" : undefined}>{body}</p>
+      {long ? (
+        <button type="button" className="as-plain as-row-more" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(!expanded)}>
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
+    </>
+  );
+}
 
 export default function Home() {
   const [channels, setChannels] = useStoredState(STORAGE_KEY, SEED, parseStoredChannels);
@@ -37,6 +65,8 @@ export default function Home() {
   const toastRef = useRef<HTMLDivElement>(null);
   const wasComposing = useRef(false);
   const focusNext = useRef<string[] | null>(null);
+  // A state change that moves a row out of the current list: the rows around it, to hand the focus on to.
+  const focusState = useRef<string[] | null>(null);
   const visible = useMemo(() => channelsIn(channels, filter, query), [channels, filter, query]);
   const countOf = (value: Filter) => (value === "All" ? channels.length : channels.filter((item) => item.status === value).length);
 
@@ -56,6 +86,14 @@ export default function Home() {
     const row = ids.map((id) => rows.find((r) => r.dataset.channel === id)).find(Boolean);
     (row?.querySelector<HTMLButtonElement>(".as-danger") ?? newRef.current ?? titleRef.current)?.focus();
   }, [removed, channels]);
+  // After a row leaves the list on a state change: the next row's state, else the previous one's, else the list.
+  useEffect(() => {
+    const ids = focusState.current;
+    if (!ids) return;
+    focusState.current = null;
+    const select = ids.map((id) => document.querySelector<HTMLSelectElement>(`.as-row[data-channel="${CSS.escape(id)}"] select`)).find(Boolean);
+    (select ?? document.querySelector<HTMLButtonElement>('.as-lists button[aria-current="true"]'))?.focus();
+  }, [channels]);
   // Reserve the toast's height at the bottom so a control focused behind it scrolls clear.
   const toastShown = removed !== null;
   useLayoutEffect(() => {
@@ -92,6 +130,10 @@ export default function Home() {
     setComposing(false);
   }
   function changeStatus(channel: Channel, status: ChannelStatus) {
+    if (filter !== "All" && status !== filter) {
+      const shownAt = visible.findIndex((item) => item.id === channel.id);
+      focusState.current = [visible[shownAt + 1]?.id, shownAt > 0 ? visible[shownAt - 1].id : undefined].filter((id): id is string => Boolean(id));
+    }
     setChannels((items) => setStatus(items, channel.id, status));
     setAnnouncement(`“${channel.title}” is now ${status}.`);
   }
@@ -106,12 +148,21 @@ export default function Home() {
   }
   async function importJson(file: File | undefined) {
     if (!file) return;
-    const result = importChannels(channels, await file.text());
+    const text = await file.text();
+    // Merge into the latest stored list once the file is read (an Undo may have landed meanwhile), and skip the
+    // write when nothing new came in.
+    const outcome: { result?: ReturnType<typeof importChannels> } = {};
+    setChannels((current) => {
+      const result = importChannels(current, text);
+      outcome.result = result;
+      return "error" in result || result.added === 0 ? current : result.channels;
+    });
+    const result = outcome.result;
+    if (!result) return;
     if ("error" in result) {
       setBackupNotice(result.error);
       return;
     }
-    setChannels(result.channels);
     setBackupNotice(`Imported ${result.added} new ${result.added === 1 ? "room" : "rooms"}${result.skipped ? `, skipped ${result.skipped} (already here or invalid)` : ""}.`);
   }
   function clearSearch() {
@@ -213,7 +264,7 @@ export default function Home() {
                 <li className="as-row" key={channel.id} data-channel={channel.id}>
                   <div>
                     <h3>{channel.title}</h3>
-                    <p className="as-row-detail">{channel.body}</p>
+                    <RoomDetail body={channel.body} />
                     <p className="as-row-meta">
                       {channel.createdAt ? <>Added <time dateTime={new Date(channel.createdAt).toISOString()}>{formatAdded(channel.createdAt)}</time></> : "Added date unknown"}
                       {channel.url ? null : " · No link saved"}

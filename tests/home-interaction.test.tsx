@@ -190,4 +190,86 @@ describe("batch Undo", () => {
     // Back on the restored row removed last (it was second in the list).
     expect(document.activeElement).toBe(removeButton(1));
   });
+
+  it("an import that finishes after Undo keeps the restored rooms", async () => {
+    const before = rowIds();
+    click(removeButton(0), 1);
+    // The file is still being read when the user presses Undo.
+    let finish!: (text: string) => void;
+    const file = { text: () => new Promise<string>((resolve) => { finish = resolve; }) } as unknown as File;
+    const input = host.querySelector<HTMLInputElement>('.hub-import input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    click(undoButton(), 1);
+    expect(rowIds()).toEqual(before);
+    await act(async () => { finish(JSON.stringify({ channels: [{ id: "x1", title: "Imported", body: "b", status: "Active", createdAt: 1 }] })); });
+    expect(rowIds()).toEqual([...before, "x1"]);
+    expect(stored().map((item: { id: string }) => item.id)).toEqual([...before, "x1"]);
+  });
+
+  it("an import that adds nothing does not write", async () => {
+    const setItem = vi.spyOn(localStorage, "setItem");
+    const file = { text: async () => JSON.stringify({ channels: [{ ...SEED[0], id: "channel-01-1" }] }) } as unknown as File;
+    const input = host.querySelector<HTMLInputElement>('.hub-import input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(host.textContent).toContain("Imported 0 new rooms");
+    expect(setItem).not.toHaveBeenCalled();
+  });
 });
+
+describe("long descriptions", () => {
+  it("a clipped description gets Show more / Show less", () => {
+    act(() => root.unmount());
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(300);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([{ ...SEED[0], body: "A long description ".repeat(20).trim() }]));
+    resetStoredCache();
+    root = createRoot(host);
+    act(() => root.render(<Home />));
+    const more = button("Show more");
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    const detail = host.querySelector<HTMLElement>(`#${CSS.escape(more.getAttribute("aria-controls")!)}`)!;
+    expect(detail.className).toContain("as-row-detail");
+    press(more);
+    expect(detail.dataset.expanded).toBe("true");
+    expect(button("Show less").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("a short description has no Show more", () => {
+    expect(button("Show more")).toBeUndefined();
+  });
+});
+
+describe("state change focus", () => {
+  beforeEach(() => {
+    act(() => root.unmount());
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(["a", "b", "c"].map((id, i) => ({ id, title: `Room ${id}`, body: "x", status: "Active", createdAt: 1710000000000 + i }))));
+    resetStoredCache();
+    root = createRoot(host);
+    act(() => root.render(<Home />));
+    press(button("Active"));
+  });
+  const selectOf = (id: string) => host.querySelector<HTMLSelectElement>(`.as-row[data-channel="${id}"] select`);
+  const change = (id: string, value: string) => {
+    const select = selectOf(id)!;
+    act(() => { select.focus(); select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  };
+
+  it("a row that leaves the filter hands focus to the next row's state, else the previous one, else the list", () => {
+    change("a", "Done");
+    expect(selectOf("a")).toBeNull();
+    expect(document.activeElement).toBe(selectOf("b"));
+    change("c", "Done");
+    expect(document.activeElement).toBe(selectOf("b"));
+    change("b", "Draft");
+    expect(document.activeElement).toBe(host.querySelector('.as-lists button[aria-current="true"]'));
+  });
+
+  it("a row that stays shown keeps focus", () => {
+    press(button("All rooms"));
+    change("a", "Done");
+    expect(document.activeElement).toBe(selectOf("a"));
+  });
+});
+

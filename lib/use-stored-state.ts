@@ -61,7 +61,10 @@ export function useStoredState<T>(key: string, initial: T, parse: (raw: string |
   const setValue = useCallback(
     (next: T | ((previous: T) => T)) => {
       const previous = readStored(key, initial, parse);
-      writeStored(key, typeof next === "function" ? (next as (previous: T) => T)(previous) : next);
+      const value = typeof next === "function" ? (next as (previous: T) => T)(previous) : next;
+      // An updater that hands back the same value changed nothing: skip the write (and the re-render).
+      if (Object.is(value, previous)) return;
+      writeStored(key, value);
     },
     [key, initial, parse],
   );
