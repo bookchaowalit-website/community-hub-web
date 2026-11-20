@@ -273,3 +273,55 @@ describe("state change focus", () => {
   });
 });
 
+describe("round 2", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(document, "fonts");
+  });
+  const seed = (channels: object[]) => {
+    act(() => root.unmount());
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(channels));
+    resetStoredCache();
+    root = createRoot(host);
+    act(() => root.render(<Home />));
+  };
+
+  it("Undo after importing a backup with the same id restores the version that was removed", async () => {
+    seed([{ id: "r1", title: "Room one", body: "x", status: "Done", createdAt: 1710000000000 }]);
+    press(host.querySelector<HTMLButtonElement>(".as-row .as-danger")!, 1);
+    const input = $<HTMLInputElement>('.hub-import input[type="file"]')!;
+    const file = { text: async () => JSON.stringify({ channels: [{ id: "r1", title: "Room one (old)", body: "x", status: "Active", createdAt: 1710000000000 }] }) } as unknown as File;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(rows()).toEqual(["Room one (old)"]);
+    press(button("Undo"), 1);
+    expect(rows()).toEqual(["Room one"]);
+    expect(stored()[0]).toMatchObject({ title: "Room one", status: "Done" });
+  });
+
+  it("a state change that drops the room out of the search hands focus on", () => {
+    seed(["a", "b"].map((id, i) => ({ id, title: `Room ${id}`, body: "x", status: "Active", createdAt: 1710000000000 + i })));
+    type($<HTMLInputElement>(".as-search input")!, "active");
+    const select = host.querySelector<HTMLSelectElement>('.as-row[data-channel="a"] select')!;
+    act(() => { select.focus(); select.value = "Done"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(host.querySelector('.as-row[data-channel="a"]')).toBeNull();
+    expect(document.activeElement).toBe(host.querySelector('.as-row[data-channel="b"] select'));
+  });
+
+  it("measures descriptions again when fonts are ready", async () => {
+    let fontsReady!: () => void;
+    const ready = new Promise<void>((resolve) => { fontsReady = resolve; });
+    Object.defineProperty(document, "fonts", { configurable: true, value: { ready, addEventListener: vi.fn(), removeEventListener: vi.fn() } });
+    let wide = 200;
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(200);
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("as-row-detail") ? wide : 200;
+    });
+    seed([{ id: "a", title: "Room a", body: "Fits with the fallback font", status: "Active", createdAt: 1710000000000 }]);
+    expect(button("Show more")).toBeUndefined();
+    wide = 260;
+    await act(async () => { fontsReady(); await ready; });
+    expect(button("Show more")).toBeDefined();
+  });
+});
+

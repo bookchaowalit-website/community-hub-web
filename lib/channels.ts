@@ -166,9 +166,14 @@ export function channelsIn(channels: readonly Channel[], filter: Filter, query: 
   return filterChannels(channels, query).filter((channel) => filter === "All" || channel.status === filter);
 }
 
-/** Put a removed channel back before the one that followed it (or at the end), for Undo. */
+/**
+ * Put a removed channel back before the one that followed it (or at the end), for Undo. When a channel with the
+ * same id is back already (an imported backup), the removed version replaces it in place: Undo brings back what
+ * was removed, not the older copy.
+ */
 export function restoreChannel(channels: readonly Channel[], channel: Channel, beforeId: string | null): Channel[] {
-  if (channels.some((item) => item.id === channel.id)) return [...channels];
+  const existing = channels.findIndex((item) => item.id === channel.id);
+  if (existing >= 0) return channels.map((item, index) => (index === existing ? channel : item));
   const at = beforeId ? channels.findIndex((item) => item.id === beforeId) : -1;
   return at < 0 ? [...channels, channel] : [...channels.slice(0, at), channel, ...channels.slice(at)];
 }

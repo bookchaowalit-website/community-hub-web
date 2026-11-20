@@ -138,6 +138,9 @@ describe("channelsIn, restoreChannel and formatAdded", () => {
     expect(restoreChannel([b], a, "b")).toEqual([a, b]);
     expect(restoreChannel([a], b, null)).toEqual([a, b]);
     expect(restoreChannel([a, b], b, null)).toEqual([a, b]);
+    // An import brought back an older copy with the same id: Undo puts back the version that was removed, in place.
+    const oldB = { ...b, status: "Active" as const, title: "B (backup)" };
+    expect(restoreChannel([oldB, a], b, null)).toEqual([b, a]);
     expect(formatAdded(Date.UTC(2026, 7, 18, 23))).toBe("18 Aug 2026");
     expect(formatAdded(0)).toBe("date unknown");
   });

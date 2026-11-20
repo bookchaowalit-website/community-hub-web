@@ -28,7 +28,17 @@ function RoomDetail({ body }: { body: string }) {
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
     observer?.observe(el);
     measure();
-    return () => observer?.disconnect();
+    // A web font that loads later can widen the text without resizing the box, so measure again then.
+    let live = true;
+    const fonts = typeof document !== "undefined" ? document.fonts : undefined;
+    const remeasure = () => { if (live) measure(); };
+    fonts?.ready?.then(remeasure, () => {});
+    fonts?.addEventListener?.("loadingdone", remeasure);
+    return () => {
+      live = false;
+      observer?.disconnect();
+      fonts?.removeEventListener?.("loadingdone", remeasure);
+    };
   }, [body]);
   const long = expanded || clipped || body.includes("\n");
   return (
@@ -130,7 +140,8 @@ export default function Home() {
     setComposing(false);
   }
   function changeStatus(channel: Channel, status: ChannelStatus) {
-    if (filter !== "All" && status !== filter) {
+    // The row leaves the list when the new state is outside the filter or no longer matches the search.
+    if (!channelsIn([{ ...channel, status }], filter, query).length) {
       const shownAt = visible.findIndex((item) => item.id === channel.id);
       focusState.current = [visible[shownAt + 1]?.id, shownAt > 0 ? visible[shownAt - 1].id : undefined].filter((id): id is string => Boolean(id));
     }
